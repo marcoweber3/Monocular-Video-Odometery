@@ -23,6 +23,23 @@ def main():
     pose_path = args.pose_path
     csv_path = args.csv_path
 
+    sim_pose_file = os.path.join(os.path.dirname(os.path.dirname(pose_path)), "camera_poses_sim.csv")
+    sim_poses = []
+
+    if os.path.isfile(sim_pose_file):
+        # load original sim poses for map coordinates
+        with open(sim_pose_file, "r", newline="", encoding="utf-8") as file:
+            reader = csv.reader(file)
+            next(reader, None)
+
+            for row in reader:
+                sim_poses.append([
+                    float(row[1]),
+                    float(row[2]),
+                    float(row[3]),
+                    float(row[4]),
+                ])
+
     first_image = cv.imread(os.path.join(img_path, "000000.png"), 0)
     image_height, image_width = first_image.shape
 
@@ -61,6 +78,9 @@ def main():
 
     previous_true_position = None
     previous_estimated_position = None
+    start_true_position = None
+    start_estimated_position = None
+    start_sim_pose = None
 
     while vo.hasNextFrame():
         frame = vo.current_frame
@@ -77,11 +97,44 @@ def main():
             mask = np.zeros_like(vo.current_frame)
 
         vo.process_frame()
-
-        print(vo.get_mono_coordinates())
+        frame_number = vo.id - 1
 
         mono_coord = vo.get_mono_coordinates()
         true_coord = vo.get_true_coordinates()
+        use_sim_coordinates = len(sim_poses) > frame_number
+
+        if use_sim_coordinates:
+            # convert camera-relative odometry back to map coordinates
+            if start_estimated_position is None:
+                start_estimated_position = mono_coord.copy()
+                start_sim_pose = sim_poses[frame_number]
+
+            relative_mono = mono_coord - start_estimated_position
+            yaw = np.radians(start_sim_pose[3])
+            right = np.array([-np.sin(yaw), np.cos(yaw)])
+            forward = np.array([np.cos(yaw), np.sin(yaw)])
+
+            estimated_xy = (
+                np.array([start_sim_pose[0], start_sim_pose[1]])
+                + right * relative_mono[0]
+                + forward * relative_mono[2]
+            )
+
+            mono_coord = np.array([
+                estimated_xy[0],
+                estimated_xy[1],
+                start_sim_pose[2] + relative_mono[1],
+            ])
+            true_coord = np.array(sim_poses[frame_number][:3])
+        else:
+            if start_true_position is None:
+                start_estimated_position = mono_coord.copy()
+                start_true_position = true_coord.copy()
+
+            mono_coord = mono_coord - start_estimated_position
+            true_coord = true_coord - start_true_position
+
+        print(mono_coord)
         mse_error = np.linalg.norm(mono_coord - true_coord)
 
         current_estimated_position = np.array([mono_coord[0], mono_coord[1], mono_coord[2]])
@@ -125,12 +178,17 @@ def main():
 
         # scale only for drawing
         draw_x = int(round(mono_coord[0] * visual_scale))
-        draw_z = int(round(mono_coord[2] * visual_scale))
         true_x = int(round(true_coord[0] * visual_scale))
-        true_z = int(round(true_coord[2] * visual_scale))
 
-        traj = cv.circle(traj, (true_x + 400, true_z + 100), 1, list((0, 0, 255)), 4)
-        traj = cv.circle(traj, (draw_x + 400, draw_z + 100), 1, list((0, 255, 0)), 4)
+        if use_sim_coordinates:
+            draw_y = int(round(mono_coord[1] * visual_scale))
+            true_y = int(round(true_coord[1] * visual_scale))
+        else:
+            draw_y = int(round(mono_coord[2] * visual_scale))
+            true_y = int(round(true_coord[2] * visual_scale))
+
+        traj = cv.circle(traj, (true_x + 400, true_y + 100), 1, list((0, 0, 255)), 4)
+        traj = cv.circle(traj, (draw_x + 400, draw_y + 100), 1, list((0, 255, 0)), 4)
 
         cv.putText(traj, 'Actual Position:', (140, 90), cv.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         cv.putText(traj, 'Red', (270, 90), cv.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
