@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from monovideoodometery import MonoVideoOdometery
 import os
 import argparse
+import csv
 
 def main():
     # Argument parser
@@ -35,6 +36,9 @@ def main():
     traj = np.zeros(shape=(600, 800, 3))
 
     flag = False
+    csv_file = open("vo_output.csv", "w", newline="")
+    csv_writer = csv.writer(csv_file)
+    csv_writer.writerow(["x", "y", "z", "true_x", "true_y", "true_z", "mse_error", "tracked_features"])
 
     while vo.hasNextFrame():
         frame = vo.current_frame
@@ -56,10 +60,21 @@ def main():
 
         mono_coord = vo.get_mono_coordinates()
         true_coord = vo.get_true_coordinates()
+        mse_error = np.linalg.norm(mono_coord - true_coord)
 
-        print("MSE Error: ", np.linalg.norm(mono_coord - true_coord))
+        print("MSE Error: ", mse_error)
         print("x: {}, y: {}, z: {}".format(*[str(pt) for pt in mono_coord]))
         print("true_x: {}, true_y: {}, true_z: {}".format(*[str(pt) for pt in true_coord]))
+        csv_writer.writerow([
+            mono_coord[0],
+            mono_coord[1],
+            mono_coord[2],
+            true_coord[0],
+            true_coord[1],
+            true_coord[2],
+            mse_error,
+            vo.n_features,
+        ])
 
         draw_x, draw_y, draw_z = [int(round(x)) for x in mono_coord]
         true_x, true_y, true_z = [int(round(x)) for x in true_coord]
@@ -75,6 +90,7 @@ def main():
         cv.imshow('trajectory', traj)
 
     cv.imwrite("./images/trajectory.png", traj)
+    csv_file.close()
 
     cv.destroyAllWindows()
 
