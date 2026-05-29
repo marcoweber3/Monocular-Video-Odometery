@@ -96,14 +96,39 @@ class MonoVideoOdometery(object):
         # Calculate optical flow between frames, st holds status
         # of points from frame to frame
         self.p1, st, err = cv2.calcOpticalFlowPyrLK(self.old_frame, self.current_frame, self.p0, None, **self.lk_params)
-        
+
+        if self.p1 is None or st is None:
+            self.n_features = 0
+
+            if self.id >= 2:
+                self.get_absolute_scale()
+
+            return
 
         # Save the good points from the optical flow
         self.good_old = self.p0[st == 1]
         self.good_new = self.p1[st == 1]
 
-        E, _ = cv2.findEssentialMat(self.good_new, self.good_old, self.focal, self.pp, cv2.RANSAC, 0.999, 1.0, None)
+        # previous image points first, current image points second
+        E, _ = cv2.findEssentialMat(self.good_old, self.good_new, self.focal, self.pp, cv2.RANSAC, 0.999, 1.0, None)
+
+        if E is None:
+            self.n_features = self.good_new.shape[0]
+
+            if self.id >= 2:
+                self.get_absolute_scale()
+
+            return
+
+        if E.shape != (3, 3):
+            E = E[:3, :3]
+
         _, R, t, _ = cv2.recoverPose(E, self.good_old, self.good_new, focal=self.focal, pp=self.pp, mask=None)
+
+        # our generated camera path always moves forward
+        if t[2][0] > 0:
+            t = -t
+
         # If the frame is one of first two, we need to initalize
         # our t and R vectors so behavior is different
         if self.id < 2:
@@ -111,7 +136,10 @@ class MonoVideoOdometery(object):
             self.t = t
         else:
             absolute_scale = self.get_absolute_scale()
-            if (absolute_scale > 0.1 and abs(t[2][0]) > abs(t[0][0]) and abs(t[2][0]) > abs(t[1][0])):
+            scale_ok = absolute_scale > 0.001
+            direction_ok = abs(t[2][0]) > abs(t[0][0]) and abs(t[2][0]) > abs(t[1][0])
+
+            if scale_ok and direction_ok:
                 self.t = self.t + absolute_scale*self.R.dot(t)
                 self.R = R.dot(self.R)
 
@@ -158,7 +186,7 @@ class MonoVideoOdometery(object):
         true_vect = np.array([[x], [y], [z]])
         self.true_coord = true_vect
         prev_vect = np.array([[x_prev], [y_prev], [z_prev]])
-        
+
         return np.linalg.norm(true_vect - prev_vect)
 
 

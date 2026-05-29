@@ -11,6 +11,8 @@ def main():
     parser = argparse.ArgumentParser(description='Process paths for image and pose data.')
     parser.add_argument('--img_path', type=str, default='./images', help='Path to the image directory')
     parser.add_argument('--pose_path', type=str, default='./pose', help='Path to the pose file')
+    parser.add_argument('--csv_path', type=str, default='vo_output.csv', help='Path to the csv output file')
+    parser.add_argument('--fov_deg', type=float, default=75.0, help='SuperSplat field of view in degrees')
     args = parser.parse_args()
 
     # Warning message if the default paths are used
@@ -19,9 +21,15 @@ def main():
 
     img_path = args.img_path
     pose_path = args.pose_path
+    csv_path = args.csv_path
 
-    focal = 718.8560
-    pp = (607.1928, 185.2157)
+    first_image = cv.imread(os.path.join(img_path, "000000.png"), 0)
+    image_height, image_width = first_image.shape
+
+    # calculate focal length from SuperSplat FoV
+    fov_rad = np.radians(args.fov_deg)
+    focal = image_width / (2.0 * np.tan(fov_rad / 2.0))
+    pp = (image_width / 2.0, image_height / 2.0)
     R_total = np.zeros((3, 3))
     t_total = np.empty(shape=(3, 1))
 
@@ -34,11 +42,25 @@ def main():
 
     vo = MonoVideoOdometery(img_path, pose_path, focal, pp, lk_params)
     traj = np.zeros(shape=(600, 800, 3))
+    visual_scale = 25.0
 
     flag = False
-    csv_file = open("vo_output.csv", "w", newline="")
+    csv_folder = os.path.dirname(csv_path)
+    if csv_folder != "":
+        os.makedirs(csv_folder, exist_ok=True)
+
+    csv_file = open(csv_path, "w", newline="")
     csv_writer = csv.writer(csv_file)
-    csv_writer.writerow(["x", "y", "z", "true_x", "true_y", "true_z", "mse_error", "tracked_features"])
+    csv_writer.writerow([
+        "x", "y", "z",
+        "true_x", "true_y", "true_z",
+        "mse_error", "tracked_features",
+        "delta_x", "delta_y", "delta_z",
+        "true_step", "estimated_step",
+    ])
+
+    previous_true_position = None
+    previous_estimated_position = None
 
     while vo.hasNextFrame():
         frame = vo.current_frame
@@ -62,6 +84,22 @@ def main():
         true_coord = vo.get_true_coordinates()
         mse_error = np.linalg.norm(mono_coord - true_coord)
 
+        current_estimated_position = np.array([mono_coord[0], mono_coord[1], mono_coord[2]])
+        current_true_position = np.array([true_coord[0], true_coord[1], true_coord[2]])
+
+        # Fehler zwischen geschaetzter und echter Position berechnen
+        delta_x = mono_coord[0] - true_coord[0]
+        delta_y = mono_coord[1] - true_coord[1]
+        delta_z = mono_coord[2] - true_coord[2]
+
+        # Bewegung seit dem letzten Frame berechnen
+        if previous_true_position is None:
+            true_step = 0.0
+            estimated_step = 0.0
+        else:
+            true_step = np.linalg.norm(current_true_position - previous_true_position)
+            estimated_step = np.linalg.norm(current_estimated_position - previous_estimated_position)
+
         print("MSE Error: ", mse_error)
         print("x: {}, y: {}, z: {}".format(*[str(pt) for pt in mono_coord]))
         print("true_x: {}, true_y: {}, true_z: {}".format(*[str(pt) for pt in true_coord]))
@@ -74,10 +112,22 @@ def main():
             true_coord[2],
             mse_error,
             vo.n_features,
+            delta_x,
+            delta_y,
+            delta_z,
+            true_step,
+            estimated_step,
         ])
 
-        draw_x, draw_y, draw_z = [int(round(x)) for x in mono_coord]
-        true_x, true_y, true_z = [int(round(x)) for x in true_coord]
+        # Aktuelle Positionen fuer den naechsten Frame speichern
+        previous_true_position = current_true_position
+        previous_estimated_position = current_estimated_position
+
+        # scale only for drawing
+        draw_x = int(round(mono_coord[0] * visual_scale))
+        draw_z = int(round(mono_coord[2] * visual_scale))
+        true_x = int(round(true_coord[0] * visual_scale))
+        true_z = int(round(true_coord[2] * visual_scale))
 
         traj = cv.circle(traj, (true_x + 400, true_z + 100), 1, list((0, 0, 255)), 4)
         traj = cv.circle(traj, (draw_x + 400, draw_z + 100), 1, list((0, 255, 0)), 4)
