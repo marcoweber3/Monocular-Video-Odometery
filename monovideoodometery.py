@@ -92,6 +92,13 @@ class MonoVideoOdometery(object):
         if self.n_features < 2000:
             self.p0 = self.detect(self.old_frame)
 
+        if self.p0 is None or self.p0.shape[0] == 0:
+            self.n_features = 0
+
+            if self.id >= 2:
+                self.get_absolute_scale()
+
+            return
 
         # Calculate optical flow between frames, st holds status
         # of points from frame to frame
@@ -108,13 +115,18 @@ class MonoVideoOdometery(object):
         # Save the good points from the optical flow
         self.good_old = self.p0[st == 1]
         self.good_new = self.p1[st == 1]
+        self.n_features = self.good_new.shape[0]
+
+        if self.n_features < 5:
+            if self.id >= 2:
+                self.get_absolute_scale()
+
+            return
 
         # previous image points first, current image points second
         E, _ = cv2.findEssentialMat(self.good_old, self.good_new, self.focal, self.pp, cv2.RANSAC, 0.999, 1.0, None)
 
-        if E is None:
-            self.n_features = self.good_new.shape[0]
-
+        if E is None or E.ndim != 2 or E.shape[0] < 3 or E.shape[1] < 3:
             if self.id >= 2:
                 self.get_absolute_scale()
 
